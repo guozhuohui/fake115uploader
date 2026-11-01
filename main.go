@@ -83,6 +83,9 @@ type uploadConfig struct {
 	HTTPProxy string `json:"httpProxy"` // HTTP 代理
 	OSSProxy  string `json:"ossProxy"`  // OSS 上传代理
 	PartsNum  uint   `json:"partsNum"`  // 断点续传的分片数量
+	ED2K      bool   `json:"ed2k"`      // 是否生成 ED2K 链接
+	ED2KMode  string `json:"ed2kMode"`  // ED2K 哈希模式：auto、blue、red
+	ED2KFile  string `json:"ed2kFile"`  // 保存 ED2K 链接的文件
 }
 
 // 上传失败的文件信息
@@ -91,17 +94,38 @@ type failedFile struct {
 	CID  uint64 `json:"cid"`  // 上传文件的 115 父文件夹 cid
 }
 
+// ED2K 链接结果
+type ed2kResult struct {
+	Path     string `json:"path"`               // 本地文件路径
+	Name     string `json:"name"`               // 文件名
+	Size     int64  `json:"size"`               // 文件大小
+	Variant  string `json:"variant"`            // blue、red 或 both
+	Hash     string `json:"hash"`               // 主链接的哈希
+	Link     string `json:"link"`               // 主链接
+	HashBlue string `json:"hashBlue,omitempty"` // Blue 哈希
+	LinkBlue string `json:"linkBlue,omitempty"` // Blue 链接
+	HashRed  string `json:"hashRed,omitempty"`  // Red 哈希
+	LinkRed  string `json:"linkRed,omitempty"`  // Red 链接
+}
+
 // 上传结果数据
 type resultData struct {
 	Success []string     `json:"success"` // 上传成功的文件
 	Failed  []failedFile `json:"failed"`  // 上传失败的文件
 	Saved   []string     `json:"saved"`   // 保存上传进度的文件
+	ED2K    []ed2kResult `json:"ed2k,omitempty"`
 }
 
 // 要上传的文件的信息
 type fileInfo struct {
-	Path     string `json:"path"`     // 文件路径
-	ParentID uint64 `json:"parentID"` // 要上传到的文件夹的 cid
+	Path         string `json:"path"`     // 文件路径
+	ParentID     uint64 `json:"parentID"` // 要上传到的文件夹的 cid
+	SHA1         string // 文件的 sha1 hash 值
+	Name         string // 文件名
+	Size         int64  // 文件大小
+	ED2KBlue     string // ED2K Blue 哈希
+	ED2KRed      string // ED2K Red 哈希
+	ED2KBoundary bool   // 文件大小是否为 ed2kChunkSize 的正整数倍
 }
 
 // 检查错误
@@ -203,7 +227,7 @@ func exitPrint() {
 		}
 	}()
 
-	if len(result.Success) == 0 && len(result.Failed) == 0 && len(result.Saved) == 0 {
+	if len(result.Success) == 0 && len(result.Failed) == 0 && len(result.Saved) == 0 && len(result.ED2K) == 0 {
 		log.Println("本次运行没有上传文件")
 		return
 	}
@@ -228,6 +252,39 @@ func exitPrint() {
 	fmt.Printf("保存上传进度的文件（%d）：\n", len(result.Saved))
 	for _, s := range result.Saved {
 		fmt.Println(s)
+	}
+
+	if len(result.ED2K) != 0 {
+		ed2kFile := config.ED2KFile
+		if ed2kFile == "" && config.ResultDir != "" {
+			ed2kFile = filepath.Join(config.ResultDir, getTime()+" ed2k.txt")
+		}
+		if ed2kFile != "" {
+			var b strings.Builder
+			for _, e := range result.ED2K {
+				b.WriteString(e.Link)
+				b.WriteByte('\n')
+				if e.Variant == "both" {
+					b.WriteString(e.LinkBlue)
+					b.WriteByte('\n')
+				}
+			}
+			log.Printf("ED2K 链接保存在 %s", ed2kFile)
+			if err := os.WriteFile(ed2kFile, []byte(b.String()), 0644); err != nil {
+				log.Printf("保存 ED2K 链接到 %s 出现错误：%v", ed2kFile, err)
+			}
+		}
+
+		fmt.Printf("ED2K 链接（%d）：\n", len(result.ED2K))
+		for _, e := range result.ED2K {
+			fmt.Println(e.Path)
+			if e.Variant == "both" {
+				fmt.Printf("  red:  %s\n", e.LinkRed)
+				fmt.Printf("  blue: %s\n", e.LinkBlue)
+			} else {
+				fmt.Println(e.Link)
+			}
+		}
 	}
 }
 
@@ -386,6 +443,9 @@ func loadConfig() (e error) {
 
 	if _, err := os.Stat(*configFile); os.IsNotExist(err) {
 		log.Printf("设置文件不存在，新建设置文件 %s ，请先设置cookies", *configFile)
+		if config.ED2KMode == "" {
+			config.ED2KMode = "auto"
+		}
 		data, err := json.MarshalIndent(config, "", "    ")
 		checkErr(err)
 		err = os.WriteFile(*configFile, data, 0644)
@@ -431,6 +491,9 @@ func initialize() (e error) {
 	partsNum := flag.Uint("parts-num", 0, "断点续传模式上传文件的`分片数量`，范围为 1 到 10000，默认为 0（即自动分片）")
 	verbose = flag.Bool("v", false, "显示更详细的信息（调试用）")
 	help := flag.Bool("h", false, "显示帮助信息")
+	ed2k := flag.Bool("ed2k", false, "为上传成功的文件生成 ED2K 链接")
+	ed2kMode := flag.String("ed2k-mode", "auto", "ED2K 哈希模式：auto、blue、red")
+	ed2kFile := flag.String("ed2k-file", "", "将 ED2K 链接保存到指定`文件`")
 
 	flag.Parse()
 
@@ -476,6 +539,35 @@ func initialize() (e error) {
 	if config.PartsNum > maxParts {
 		log.Printf("分片数量不能大于%d", maxParts)
 		os.Exit(1)
+	}
+
+	// ED2K 参数，优先级：命令行 > 设置文件 > 默认值
+	setFlags := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) {
+		setFlags[f.Name] = true
+	})
+	if setFlags["ed2k"] {
+		config.ED2K = *ed2k
+	}
+	if setFlags["ed2k-mode"] {
+		config.ED2KMode = strings.ToLower(strings.TrimSpace(*ed2kMode))
+	}
+	config.ED2KMode = strings.ToLower(strings.TrimSpace(config.ED2KMode))
+	if config.ED2KMode == "" {
+		config.ED2KMode = "auto"
+	}
+	switch config.ED2KMode {
+	case "auto", "blue", "red":
+	default:
+		log.Printf("ED2K 哈希模式 %q 无效，只支持 auto、blue、red", config.ED2KMode)
+		os.Exit(1)
+	}
+	if setFlags["ed2k-file"] {
+		config.ED2KFile = strings.TrimSpace(*ed2kFile)
+	}
+	// 指定了输出文件时自动开启 ED2K 生成。
+	if config.ED2KFile != "" && !setFlags["ed2k"] {
+		config.ED2K = true
 	}
 
 	// 优先使用参数指定的 Cookie
@@ -706,25 +798,29 @@ func main() {
 func (file *fileInfo) uploadFile() {
 	switch {
 	case *fastUpload:
-		_, err := file.fastUploadFile()
+		token, err := file.fastUploadFile()
 		if err != nil {
 			log.Printf("秒传模式上传 %s 出现错误：%v", file.Path, err)
 			result.Failed = append(result.Failed, failedFile{Path: file.Path, CID: file.ParentID})
 			return
 		}
+		file.setFromToken(token)
+		file.addED2KResult()
 		result.Success = append(result.Success, file.Path)
 	case *upload:
 		token, err := file.fastUploadFile()
 		if err != nil {
 			log.Printf("秒传模式上传 %s 出现错误：%v", file.Path, err)
 			log.Printf("现在开始使用普通模式上传 %s", file.Path)
-			err := ossUploadFile(token, file.Path)
+			err := ossUploadFile(token, file.Path, file.ParentID)
 			if err != nil {
 				log.Printf("普通模式上传 %s 出现错误：%v", file.Path, err)
 				result.Failed = append(result.Failed, failedFile{Path: file.Path, CID: file.ParentID})
 				return
 			}
 		}
+		file.setFromToken(token)
+		file.addED2KResult()
 		result.Success = append(result.Success, file.Path)
 	case *multipartUpload:
 		// 存档文件保存在设置文件所在文件夹内
@@ -735,7 +831,7 @@ func (file *fileInfo) uploadFile() {
 			if err != nil {
 				log.Printf("秒传模式上传 %s 出现错误：%v", file.Path, err)
 				log.Println("现在开始使用断点续传模式上传")
-				err := multipartUploadFile(token, file.Path, nil)
+				err := multipartUploadFile(token, file.Path, file.ParentID, nil)
 				if err != nil {
 					if errors.Is(err, errStopUpload) {
 						return
@@ -745,6 +841,8 @@ func (file *fileInfo) uploadFile() {
 					return
 				}
 			}
+			file.setFromToken(token)
+			file.addED2KResult()
 			result.Success = append(result.Success, file.Path)
 		} else {
 			if info.IsDir() {
@@ -753,7 +851,7 @@ func (file *fileInfo) uploadFile() {
 				return
 			}
 			log.Printf("发现文件 %s 的上传曾经中断过，现在开始断点续传", file.Path)
-			err := resumeUpload(file.Path)
+			token, err := resumeUpload(file)
 			if err != nil {
 				if errors.Is(err, errStopUpload) {
 					return
@@ -762,7 +860,69 @@ func (file *fileInfo) uploadFile() {
 				result.Failed = append(result.Failed, failedFile{Path: file.Path, CID: file.ParentID})
 				return
 			}
+			file.setFromToken(token)
+			file.addED2KResult()
 			result.Success = append(result.Success, file.Path)
 		}
 	}
+}
+
+// setFromToken 把 fastToken 中的文件元数据同步到 fileInfo。
+func (file *fileInfo) setFromToken(token *fastToken) {
+	if token == nil || (token.SHA1 == "" && token.ED2KBlue == "") {
+		return
+	}
+
+	file.SHA1 = token.SHA1
+	file.Size = token.Size
+	file.Name = token.FileName
+	file.ED2KBlue = token.ED2KBlue
+	file.ED2KRed = token.ED2KRed
+	file.ED2KBoundary = token.ED2KBoundary
+}
+
+// addED2KResult 根据 fileInfo 上的哈希生成链接并保存到 result 中。
+func (file *fileInfo) addED2KResult() {
+	if !config.ED2K || file.ED2KBlue == "" {
+		return
+	}
+	if file.ED2KRed == "" {
+		file.ED2KRed = file.ED2KBlue
+	}
+
+	name := file.Name
+	if name == "" {
+		name = filepath.Base(file.Path)
+	}
+	size := file.Size
+
+	r := ed2kResult{
+		Path:    file.Path,
+		Name:    name,
+		Size:    size,
+		Variant: "blue",
+		Hash:    file.ED2KBlue,
+		Link:    ed2kLink(name, size, file.ED2KBlue),
+	}
+
+	switch config.ED2KMode {
+	case "red":
+		r.Variant = "red"
+		r.Hash = file.ED2KRed
+		r.Link = ed2kLink(name, size, file.ED2KRed)
+	case "auto":
+		if file.ED2KBoundary {
+			r.Variant = "both"
+			r.HashBlue = file.ED2KBlue
+			r.LinkBlue = ed2kLink(name, size, file.ED2KBlue)
+			r.HashRed = file.ED2KRed
+			r.LinkRed = ed2kLink(name, size, file.ED2KRed)
+			// 115 的 ED2K 生态更接近 eMule，边界情况下优先给 Red；
+			// 如果实测确认 115 使用 Blue，可把下面两行改为 Blue。
+			r.Hash = r.HashRed
+			r.Link = r.LinkRed
+		}
+	}
+
+	result.ED2K = append(result.ED2K, r)
 }

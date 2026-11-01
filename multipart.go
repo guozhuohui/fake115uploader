@@ -59,7 +59,7 @@ func getBucket(bucketName string) (ot *ossToken, bucket *oss.Bucket, e error) {
 }
 
 // 利用 oss 的接口以 multipart 的方式上传文件，sp 不为 nil 时恢复上次的上传
-func multipartUploadFile(ft *fastToken, file string, sp *saveProgress) (e error) {
+func multipartUploadFile(ft *fastToken, file string, cid uint64, sp *saveProgress) (e error) {
 	defer func() {
 		if err := recover(); err != nil {
 			e = fmt.Errorf("multipartUploadFile() error: %v", err)
@@ -82,6 +82,26 @@ func multipartUploadFile(ft *fastToken, file string, sp *saveProgress) (e error)
 	var parts []oss.UploadPart
 	if sp != nil {
 		ft = sp.FastToken
+		if ft == nil {
+			return fmt.Errorf("存档文件缺少 FastToken")
+		}
+		// 旧版本的存档没有 ED2K 字段，恢复时补算一次。
+		if config.ED2K && ft.ED2KBlue == "" {
+			f, err := os.Open(file)
+			checkErr(err)
+			hashes, err := hashFile(f, true)
+			f.Close()
+			checkErr(err)
+
+			ft.SHA1 = hashes.SHA1
+			ft.Size = hashes.Size
+			if ft.FileName == "" {
+				ft.FileName = filepath.Base(file)
+			}
+			ft.ED2KBlue = hashes.ED2K.Blue
+			ft.ED2KRed = hashes.ED2K.Red
+			ft.ED2KBoundary = hashes.ED2K.Boundary
+		}
 		chunks = sp.Chunks
 		imur = sp.Imur
 		parts = sp.Parts
@@ -106,7 +126,7 @@ func multipartUploadFile(ft *fastToken, file string, sp *saveProgress) (e error)
 		// 断点续传模式上传的文件大小不能小于 1KB（1KB 这个大小属于推测，没详细测试过）
 		if info.Size() <= 1024 {
 			log.Printf("%s 的大小小于1KB，改用普通模式上传", file)
-			return ossUploadFile(ft, file)
+			return ossUploadFile(ft, file, cid)
 		}
 		// 上传的文件大小不能超过 115GB
 		if info.Size() > 115*1024*1024*1024 {
@@ -249,7 +269,7 @@ func multipartUploadFile(ft *fastToken, file string, sp *saveProgress) (e error)
 
 	time.Sleep(time.Second)
 	// 验证上传是否成功
-	fileURL := fmt.Sprintf(listFileURL, config.CID, 20)
+	fileURL := fmt.Sprintf(listFileURL, cid, 20)
 	v, err := getURLJSON(fileURL)
 	checkErr(err)
 	s := string(v.GetStringBytes("data", "0", "sha"))
@@ -273,7 +293,9 @@ func multipartUploadFile(ft *fastToken, file string, sp *saveProgress) (e error)
 }
 
 // 恢复上传文件
-func resumeUpload(file string) (e error) {
+func resumeUpload(file *fileInfo) (*fastToken, error) {
 	sp := new(saveProgress)
-	return multipartUploadFile(nil, file, sp)
+	err := multipartUploadFile(nil, file.Path, file.ParentID, sp)
+
+	return sp.FastToken, err
 }

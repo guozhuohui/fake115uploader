@@ -35,17 +35,22 @@ type callback struct {
 }
 
 type fastToken struct {
-	Request    string   `json:"request"`
-	Status     int      `json:"status"`
-	StatusCode int      `json:"statuscode"`
-	StatusMsg  string   `json:"statusmsg"`
-	PickCode   string   `json:"pickcode"`
-	Target     string   `json:"target"`
-	Version    string   `json:"version"`
-	Bucket     string   `json:"bucket"`
-	Object     string   `json:"object"`
-	Callback   callback `json:"callback"`
-	SHA1       string   // 文件的 sha1 hash 值
+	Request      string   `json:"request"`
+	Status       int      `json:"status"`
+	StatusCode   int      `json:"statuscode"`
+	StatusMsg    string   `json:"statusmsg"`
+	PickCode     string   `json:"pickcode"`
+	Target       string   `json:"target"`
+	Version      string   `json:"version"`
+	Bucket       string   `json:"bucket"`
+	Object       string   `json:"object"`
+	Callback     callback `json:"callback"`
+	SHA1         string   // 文件的 sha1 hash 值
+	FileName     string   `json:"ed2kFileName,omitempty"`
+	Size         int64    `json:"ed2kSize,omitempty"`
+	ED2KBlue     string   `json:"ed2kBlue,omitempty"`
+	ED2KRed      string   `json:"ed2kRed,omitempty"`
+	ED2KBoundary bool     `json:"ed2kBoundary,omitempty"`
 }
 
 const md5Salt = "Qclm8MGWUv59TnrR0XPg"
@@ -126,7 +131,7 @@ func uploadSHA1(filename, fileSize, totalHash, signKey, signVal string, targetCI
 }
 
 // 利用文件的 sha1 hash 值上传文件获取响应
-func (file *fileInfo) uploadFileSHA1() (body []byte, fileSHA1 string, e error) {
+func (file *fileInfo) uploadFileSHA1() (body []byte, hashes fileHashes, e error) {
 	defer func() {
 		if err := recover(); err != nil {
 			e = fmt.Errorf("uploadFileSHA1() error: %v", err)
@@ -137,7 +142,7 @@ func (file *fileInfo) uploadFileSHA1() (body []byte, fileSHA1 string, e error) {
 	checkErr(err)
 	defer f.Close()
 
-	_, totalHash, err := hashSHA1(f)
+	hashes, err = hashFile(f, config.ED2K)
 	checkErr(err)
 
 	info, err := os.Stat(file.Path)
@@ -146,7 +151,21 @@ func (file *fileInfo) uploadFileSHA1() (body []byte, fileSHA1 string, e error) {
 	fileSize := strconv.FormatInt(info.Size(), 10)
 	targetCID := file.ParentID
 
-	body, err = uploadSHA1(filename, fileSize, totalHash, "", "", targetCID)
+	if config.ED2K && hashes.Size != info.Size() {
+		log.Printf("文件 %s 在计算哈希时大小发生变化，跳过 ED2K 链接", file.Path)
+		hashes.ED2K = ed2kSums{}
+	}
+	hashes.Size = info.Size()
+
+	// 把元数据保存在 file 上，上传成功后可据此生成 ED2K 链接。
+	file.SHA1 = hashes.SHA1
+	file.Size = hashes.Size
+	file.Name = filename
+	file.ED2KBlue = hashes.ED2K.Blue
+	file.ED2KRed = hashes.ED2K.Red
+	file.ED2KBoundary = hashes.ED2K.Boundary
+
+	body, err = uploadSHA1(filename, fileSize, hashes.SHA1, "", "", targetCID)
 	checkErr(err)
 
 	var p fastjson.Parser
@@ -162,11 +181,11 @@ func (file *fileInfo) uploadFileSHA1() (body []byte, fileSHA1 string, e error) {
 		signVal, err := hashFileRange(f, signCheck)
 		checkErr(err)
 
-		body, err = uploadSHA1(filename, fileSize, totalHash, signKey, signVal, targetCID)
+		body, err = uploadSHA1(filename, fileSize, hashes.SHA1, signKey, signVal, targetCID)
 		checkErr(err)
 	}
 
-	return body, totalHash, nil
+	return body, hashes, nil
 }
 
 // 以秒传模式上传文件
@@ -180,9 +199,14 @@ func (file *fileInfo) fastUploadFile() (token *fastToken, e error) {
 	token = new(fastToken)
 	log.Println("秒传模式上传文件：" + file.Path)
 
-	body, fileSHA1, err := file.uploadFileSHA1()
+	body, hashes, err := file.uploadFileSHA1()
 	checkErr(err)
-	token.SHA1 = fileSHA1
+	token.SHA1 = hashes.SHA1
+	token.Size = hashes.Size
+	token.FileName = file.Name
+	token.ED2KBlue = hashes.ED2K.Blue
+	token.ED2KRed = hashes.ED2K.Red
+	token.ED2KBoundary = hashes.ED2K.Boundary
 
 	if *verbose {
 		log.Printf("秒传模式上传文件 %s 的响应体的内容是：\n%s", file.Path, string(body))
@@ -201,6 +225,13 @@ func (file *fileInfo) fastUploadFile() (token *fastToken, e error) {
 		// 秒传失败的响应包含普通上传模式和断点续传模式的 token
 		err = json.Unmarshal(body, &token)
 		checkErr(err)
+		// 重新写入元数据，避免反序列化覆盖或替换 token 时丢失。
+		token.SHA1 = hashes.SHA1
+		token.Size = hashes.Size
+		token.FileName = file.Name
+		token.ED2KBlue = hashes.ED2K.Blue
+		token.ED2KRed = hashes.ED2K.Red
+		token.ED2KBoundary = hashes.ED2K.Boundary
 
 		if *verbose {
 			log.Printf("秒传模式上传 %s 失败返回的内容是：\n%+v", file.Path, token)

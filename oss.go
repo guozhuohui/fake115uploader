@@ -165,7 +165,7 @@ func getClientOptions() (options []oss.ClientOption) {
 }
 
 // 利用 oss 的接口上传文件
-func ossUploadFile(ft *fastToken, file string) (e error) {
+func ossUploadFile(ft *fastToken, file string, cid uint64) (e error) {
 	defer func() {
 		if err := recover(); err != nil {
 			e = fmt.Errorf("ossUploadFile() error: %v", err)
@@ -197,7 +197,7 @@ func ossUploadFile(ft *fastToken, file string) (e error) {
 
 	time.Sleep(time.Second)
 	// 验证上传是否成功
-	fileURL := fmt.Sprintf(listFileURL, config.CID, 20)
+	fileURL := fmt.Sprintf(listFileURL, cid, 20)
 	v, err := getURLJSON(fileURL)
 	checkErr(err)
 	s := string(v.GetStringBytes("data", "0", "sha"))

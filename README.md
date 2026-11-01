@@ -16,6 +16,12 @@
 
 `go install github.com/orzogc/fake115uploader@master`
 
+如果访问 `proxy.golang.org` 超时，可以先切换 Go 模块代理，例如：
+
+`go env -w GOPROXY=https://goproxy.cn,direct`
+
+然后重新执行上面的 `go install` 或 `go build` 命令。
+
 ### 使用方法
 首先要先运行一次 `fake115uploader` 生成设置文件fake115uploader.json（使用 `-l 文件` 指定设置文件，默认为程序所在的文件夹里的fake115uploader.json），然后登陆网页版115，按F12后刷新，将115网页请求的Cookie的值全部复制到fake115uploader.json的cookies的值里（参考[这里](https://github.com/LSD08KM/Fake115Upload_Python3#cookies%E5%9C%A8%E5%93%AA%E9%87%8C)），或者运行时用参数 `-k Cookie` 指定要用的Cookie。
 
@@ -42,6 +48,23 @@
 设置fake115uploader.json的httpRetry或运行时加上参数 `-http-retry 重试次数` 设置HTTP请求失败后的重试次数，默认为0（即不重试）。
 
 运行时加上参数 `-v` 显示更详细的信息（调试用）。
+
+### 生成 ED2K 链接
+运行时加上参数 `-ed2k`，上传成功后会为每个文件生成 ED2K 链接并打印出来；如果设置了 `resultDir` 或 `-r`，还会写入 `result.json` 的 `ed2k` 字段。链接只包含文件名、文件大小和 ED2K 哈希，不包含文件内容。
+
+示例：`fake115uploader -u -ed2k 文件`
+
+可以用 `-ed2k-mode` 指定哈希模式：
+
+* `auto`（默认）：普通文件输出一个链接；文件大小恰好是 9,728,000 字节的整数倍时，同时输出 Blue 和 Red 两个链接，避免两种历史实现不一致导致 115 无法命中。
+* `blue`：只输出标准/修正实现的哈希。
+* `red`：只输出 eMule 兼容实现的哈希。
+
+可以用 `-ed2k-file 文件` 将链接保存到指定文件；如果同时设置了 `resultDir` 或 `-r`，默认会额外保存一份 `时间 ed2k.txt`。
+
+注意：ED2K 链接只是文件身份标识，不是下载地址。115 云下载会优先在服务端按哈希查找已有文件，命中时可以直接转存；如果没有命中，115 会走真实下载，能否成功取决于 ED2K 供源。上传到 115 本身不等于一定能在 115 秒离，也不保证该 ED2K 哈希已经进入 115 的云下载索引。
+
+另外，115 客户端 v38 存在把部分 ED2K 链接误判为“错误链接”的问题（旧版本或网页端可能正常），遇到时可以先改用 115 网页版云下载重试，参考 [115 社区反馈](https://115.com/115/T980360.html)。如果网页端也提示链接无效或无法保存，请先确认 115 服务端是否已有该 ED2K 哈希对应的资源；仅把文件上传到 115 并不等于创建了 ED2K 供源。
 
 ### 代理设置
 `fake115uploader`的HTTP请求和OSS上传默认使用环境变量`http_proxy`和`https_proxy`的值作为代理。

@@ -102,33 +102,12 @@ func ed2kRoot(digests []byte) string {
 	return strings.ToUpper(hex.EncodeToString(h.Sum(nil)))
 }
 
-// escapeED2KName 对文件名做 RFC 3986 百分号编码，只保留 unreserved 字符。
-//
-// ED2K 链接用 | 分隔字段，因此文件名中的 |、%、空格、?、# 等都必须编码；
-// 逐字节编码也能正确处理 UTF-8 中文。
-func escapeED2KName(name string) string {
-	const upperHex = "0123456789ABCDEF"
-
-	var b strings.Builder
-	b.Grow(len(name) * 3)
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' || c == '~' {
-			b.WriteByte(c)
-			continue
-		}
-
-		b.WriteByte('%')
-		b.WriteByte(upperHex[c>>4])
-		b.WriteByte(upperHex[c&0x0f])
-	}
-
-	return b.String()
-}
-
 // ed2kLink 拼接 ED2K 链接。
+//
+// 文件名按原始 UTF-8 写入，不做 URL 编码。
+// 注意：ED2K 用 | 分隔字段，文件名本身不能包含 |；Windows 文件名不允许 |，
+// 其他平台遇到该字符时生成的链接会被客户端截断。
 func ed2kLink(name string, size int64, hash string) string {
-	return "ed2k://|file|" + escapeED2KName(name) + "|" +
+	return "ed2k://|file|" + name + "|" +
 		strconv.FormatInt(size, 10) + "|" + strings.ToUpper(hash) + "|/"
 }

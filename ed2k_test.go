@@ -167,33 +167,20 @@ func TestED2KHasherStreaming(t *testing.T) {
 	}
 }
 
-func TestEscapeED2KName(t *testing.T) {
-	cases := []struct {
-		in   string
-		want string
-	}{
-		{"abc-123_.txt", "abc-123_.txt"},
-		{"hello world", "hello%20world"},
-		{"a|b", "a%7Cb"},
-		{"100%.txt", "100%25.txt"},
-		{"中文 | hello ?.txt", "%E4%B8%AD%E6%96%87%20%7C%20hello%20%3F.txt"},
-	}
-
-	for _, tc := range cases {
-		if got := escapeED2KName(tc.in); got != tc.want {
-			t.Errorf("escapeED2KName(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
-func TestED2KLink(t *testing.T) {
+func TestED2KLinkRawName(t *testing.T) {
 	hash := strings.Repeat("a", 32)
-	got := ed2kLink("中文 | hello ?.txt", 42, hash)
-	want := "ed2k://|file|%E4%B8%AD%E6%96%87%20%7C%20hello%20%3F.txt|42|" +
-		strings.Repeat("A", 32) + "|/"
+	cases := []string{
+		"Tokyo-Hot e170 中田恵理 Eri Nakata [612P／281.8MB].zip",
+		"hello world.zip",
+		"中文 [x] ? 100%.zip",
+	}
 
-	if got != want {
-		t.Fatalf("ed2kLink() = %q, want %q", got, want)
+	for _, name := range cases {
+		got := ed2kLink(name, 42, hash)
+		want := "ed2k://|file|" + name + "|42|" + strings.Repeat("A", 32) + "|/"
+		if got != want {
+			t.Fatalf("ed2kLink(%q) = %q, want %q", name, got, want)
+		}
 	}
 }
 

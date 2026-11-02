@@ -120,16 +120,15 @@ ED2K 使用 **MD4**，但并不是对整个文件直接做一次 MD4：
 ed2k://|file|<文件名>|<字节数>|<32 位十六进制哈希>|/
 ```
 
-实际 115 社区/论坛中的链接常见两种写法：
+实际 115 链接中文件名一般直接写原始 UTF-8：中文、空格、`[` `]`、全角符号等都保持原样，**不需要做 URL 编码**。部分网站会使用百分号编码，但这不是 ED2K 链接的必需格式，115 也不要求。
 
-- 文件名直接写 UTF-8 中文（如 `ed2k://|file|原始生活21天....mp4|1231312683|8800...|h=...|/`）；
-- 文件名做百分号编码（如 `%E5%A4%A7...%2Emkv`）。
-
-两种 115 都能接受。为稳妥处理空格、中文、`|`、`%`、`?`、`#` 等字符，建议统一做 **RFC 3986 百分号编码**（只保留 `A-Z a-z 0-9 - . _ ~`），即：
+示例：
 
 ```text
-ed2k://|file|%E4%B8%AD%E6%96%87%20%7C%20hello%20%3F.txt|42|AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA|/
+ed2k://|file|中文 hello ?.txt|42|AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA|/
 ```
+
+注意：`|` 是 ED2K 链接的字段分隔符，文件名本身不能包含 `|`（Windows 文件名也不允许该字符）。
 
 补充：
 
@@ -185,7 +184,7 @@ ed2k://|file|%E4%B8%AD%E6%96%87%20%7C%20hello%20%3F.txt|42|AAAAAAAAAAAAAAAAAAAAA
 | [Kimundi/ed2k](https://github.com/Kimundi/ed2k) | Red/Blue 定义、测试向量 |
 | [zorchenhimer/go-ed2k](https://github.com/zorchenhimer/go-ed2k) | Go 的 `SumBlue`/`SumRed` 实现 |
 | [go.felesatra.moe/hash/ed2k](https://pkg.go.dev/go.felesatra.moe/hash/ed2k) | `hash.Hash` 风格、`AltHash` |
-| [chocko124/ed2k-link-generator-toolkit](https://github.com/chocko124/ed2k-link-generator-toolkit) | 流式、Blue/Red、URL 编码、115/PikPak 场景说明 |
+| [chocko124/ed2k-link-generator-toolkit](https://github.com/chocko124/ed2k-link-generator-toolkit) | 流式、Blue/Red、原始文件名、115/PikPak 场景说明 |
 | [ed2ktool.com](https://www.ed2ktool.com/) | 浏览器端本地计算的产品形态 |
 | [mrx.la ED2K.HashTool.Wpf](https://mrx.la/921) | Windows 批量工具，115 用户的实际工作流；提到带 `h=` 标签的链接 |
 | [115bot-go](https://github.com/AidanAllen/115bot-go) | 115 离线 API 的实测字段与坑 |
@@ -314,27 +313,8 @@ func ed2kRoot(digests []byte) string {
     return strings.ToUpper(fmt.Sprintf("%X", h.Sum(nil)))
 }
 
-// escapeED2KName 做 RFC 3986 百分号编码，只保留 unreserved 字符。
-func escapeED2KName(name string) string {
-    const hex = "0123456789ABCDEF"
-    var b strings.Builder
-    b.Grow(len(name) * 3)
-    for i := 0; i < len(name); i++ {
-        c := name[i]
-        if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' || c == '~' {
-            b.WriteByte(c)
-        } else {
-            b.WriteByte('%')
-            b.WriteByte(hex[c>>4])
-            b.WriteByte(hex[c&0x0f])
-        }
-    }
-    return b.String()
-}
-
 func ed2kLink(name string, size int64, hash string) string {
-    return "ed2k://|file|" + escapeED2KName(name) + "|" +
+    return "ed2k://|file|" + name + "|" +
         strconv.FormatInt(size, 10) + "|" + strings.ToUpper(hash) + "|/"
 }
 ```
@@ -345,7 +325,7 @@ func ed2kLink(name string, size int64, hash string) string {
 - **空文件**：`Sums()` 会补 `MD4("")`，得到 `31D6...`，不会越界。
 - **整数倍**：`Boundary` 为真时算 Red；Blue 直接使用块哈希拼接。
 - **单块文件**：`len(digests)==16` 直接返回，不再做根哈希（符合算法）。
-- **文件名编码**：逐字节编码，天然支持 UTF-8 中文；`|`、`%`、空格、`?`、`#` 都安全。
+- **文件名**：直接使用原始 UTF-8，不做 URL 编码；中文、空格、`[` `]`、全角符号都保持原样。`|` 是字段分隔符，文件名不能包含它（Windows 文件名也不允许）。
 - **可选**：如果希望链接带 `h=`（AICH），需要额外实现 AICH 哈希树；115 不要求，v1 不做。
 
 ### 3.3 改造 `hash.go`：一次读取同时算 SHA1 和 ED2K
@@ -674,12 +654,12 @@ func writeED2KLinks(path string) error {
 
 | 问题 | 策略 |
 | --- | --- |
-| 文件名 | 默认用本地文件名；115 匹配时忽略文件名，不影响秒离；百分号编码保证格式安全 |
+| 文件名 | 默认用本地文件名，原始 UTF-8 写入，不做 URL 编码；115 匹配时忽略文件名，不影响秒离 |
 | 文件大小 | 用本地实际字节数；与 115 存储不一致说明上传异常，应记录警告 |
 | 哈希大小写 | 统一大写 |
 | Blue/Red | 非边界无差异；边界默认 `auto` 同时输出两个，主链接先用 Red，实测后调整 |
 | `h=` AICH | 不输出；115 不要求，带 `h=` 的链接也能被 115 接受 |
-| 文件名里的 `|`、`%`、空格、中文 | RFC 3986 编码，115 会解码；即使不解码也不影响匹配 |
+| 文件名里的 `|`、`%`、空格、中文 | 原始写入；`|` 是字段分隔符，文件名不能包含（Windows 文件名也不允许） |
 | 115 改名/加广告名 | 115 使用服务端已有名字；链接名仅用于展示，不影响匹配 |
 | 115 没命中服务端资源 | 会走真实下载，取决于 ED2K 供源；文档中明确说明，不承诺 100% 秒离 |
 
@@ -699,7 +679,7 @@ func writeED2KLinks(path string) error {
 | 上传失败 | 不生成链接；`result.Failed` 行为不变 |
 | `-ed2k` 关闭 | 不计算 MD4，不新增输出，完全保持旧行为 |
 | 结果 JSON 兼容 | `success` 不变，新增可选 `ed2k` 数组 |
-| 文件名含换行/控制字符 | 百分号编码；链接仍是一行 |
+| 文件名含换行/控制字符 | 原始写入；换行会破坏 `ed2k.txt` 的行结构（Windows 文件名不允许控制字符） |
 | 文件名超长 | 链接可能很长，但 115 接受；必要时可加 `-ed2k-name` 用短名，但会影响可读性 |
 
 ---
@@ -717,9 +697,9 @@ func writeED2KLinks(path string) error {
    - 用较小的自定义 chunk size 做性质测试（可选，需要把常量参数化）。
 3. **流式一致性**
    - 同一份数据按 1 字节、7 字节、32 KiB、1 MiB 等不同 `Write` 切分，结果一致。
-4. **链接编码**
-   - 中文、空格、`|`、`%`、`?`、`#`、`&`、`=`、`.`、`_`；
-   - 断言输出形如 `ed2k://|file|%E4%B8%AD%E6%96%87...|42|AAAA...|/`。
+4. **链接文件名**
+   - 中文、空格、`[` `]`、全角符号、`%`、`?`、`#` 等保持原始 UTF-8；
+   - 断言输出形如 `ed2k://|file|中文 文件.zip|42|AAAA...|/`，不出现 `%20`/`%5B` 等编码。
 5. **`hashFile`**
    - 同时校验 SHA1/大小/ED2K；
    - 空文件不再 panic；
